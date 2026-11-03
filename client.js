@@ -10,7 +10,7 @@
  * routes; this file only composes them into one plugin.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-sidebar-plus',
+  id: '@jokerxian/dsh-sidebar-plus',
   factory(require) {
     const React = require('react');
 
@@ -18,7 +18,7 @@ window.__ModuleLoader__.load({
 
     const h = React.createElement;
 
-    const ID = '@local/dsh-sidebar-plus';
+    const ID = '@jokerxian/dsh-sidebar-plus';
     const KIND = 'sidebar-plus-folder';
     const NS = 'folderDock';
     const RPC_ROUTE = '/sidebar-plus/folder/rpc';
@@ -3110,7 +3110,7 @@ window.__ModuleLoader__.load({
 
     function injectStyles() {
       const style = document.createElement('style');
-      style.setAttribute('data-dsh-plugin', '@local/dsh-sidebar-plus/git');
+      style.setAttribute('data-dsh-plugin', '@jokerxian/dsh-sidebar-plus/git');
       style.textContent = CSS;
       document.head.appendChild(style);
       return () => {

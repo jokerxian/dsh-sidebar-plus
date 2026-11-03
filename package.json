@@ -1,9 +1,16 @@
 {
-  "name": "@local/dsh-sidebar-plus",
+  "name": "@jokerxian/dsh-sidebar-plus",
   "version": "1.0.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Sidebar Plus: folder browsing with add-to-conversation, and a full Git workbench, both in the right sidebar.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jokerxian/dsh-sidebar-plus.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
