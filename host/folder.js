@@ -14,6 +14,7 @@ import { createReadStream, promises as fsp } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { listDirectory, mimeFor, resolveLimits, scanTargets } from '../lib/fsops.js';
 
 const RPC_ROUTE = '/sidebar-plus/folder/rpc';
@@ -287,6 +288,11 @@ async function dispatch(ctx, state, op, payload) {
       await openExternal(target);
       return { path: target };
     }
+    case 'stat': {
+      const target = requireRoot(roots, payload.path);
+      const stats = await fsp.stat(target);
+      return { type: stats.isDirectory() ? 'directory' : 'file' };
+    }
     default:
       throw fail(`未知操作：${String(op)}`);
   }
@@ -367,11 +373,56 @@ async function pasteInto(roots, target, sources) {
   return { items, failed };
 }
 
-/** Start a detached OS launcher without letting a missing binary crash the Host. */
+/**
+ * Start one detached OS launcher and resolve once the process exists.
+ *
+ * `windowsHide` must stay off for GUI launchers. It maps to `SW_HIDE` in the
+ * child's startup info, and Explorer applies that flag to the folder window it
+ * opens: the window is created, but invisibly, so the panel looks dead. Only
+ * background console tools should be hidden. A spawn failure (missing binary,
+ * denied token) rejects here instead of failing silently, so the browser half
+ * can report it.
+ */
 function launch(command, args) {
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
-  child.on('error', () => {});
-  child.unref();
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+/**
+ * Choose the argv target Explorer can receive intact.
+ *
+ * Explorer parses its own command line and splits fields at commas and equals
+ * signs, so a raw such path silently opens a different target; it also rejects
+ * percent-encoded non-ASCII and falls back to Documents. Only a path carrying a
+ * separator travels as an encoded file URI — every other path stays verbatim,
+ * which is the form Explorer is known to open directly. Node's ASCII escapes
+ * stand, the non-ASCII ones are decoded back to literal characters, and both
+ * separators are escaped.
+ */
+function explorerTarget(path) {
+  if (!/[,="]/.test(path)) return path;
+  return pathToFileURL(path, { windows: true }).href
+    .replace(/(?:%[89A-F][0-9A-F])+/gi, (escaped) => {
+      try {
+        return decodeURIComponent(escaped);
+      } catch {
+        return escaped;
+      }
+    })
+    .replaceAll(',', '%2C')
+    .replaceAll('=', '%3D');
 }
 
 /** Open the OS file manager at one file (selected) or directory (opened). */
@@ -379,27 +430,28 @@ async function reveal(path, revealInParent) {
   const stats = await fsp.stat(path);
   const selectFile = !stats.isDirectory() && revealInParent;
   if (process.platform === 'win32') {
-    launch('explorer.exe', selectFile ? ['/select,', path] : [path]);
+    const target = explorerTarget(path);
+    await launch('explorer.exe', selectFile ? ['/select,', target] : [target]);
     return;
   }
   if (process.platform === 'darwin') {
-    launch('open', selectFile ? ['-R', path] : [path]);
+    await launch('open', selectFile ? ['-R', path] : [path]);
     return;
   }
-  launch('xdg-open', [stats.isDirectory() ? path : dirname(path)]);
+  await launch('xdg-open', [stats.isDirectory() ? path : dirname(path)]);
 }
 
 /** Open one file with the OS default handler (a browser for .html). */
 async function openExternal(path) {
   if (process.platform === 'win32') {
-    launch('explorer.exe', [path]);
+    await launch('explorer.exe', [explorerTarget(path)]);
     return;
   }
   if (process.platform === 'darwin') {
-    launch('open', [path]);
+    await launch('open', [path]);
     return;
   }
-  launch('xdg-open', [path]);
+  await launch('xdg-open', [path]);
 }
 
 /* ---------------------------------------------------------------- byte route */

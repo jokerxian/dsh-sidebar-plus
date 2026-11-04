@@ -113,6 +113,12 @@ function dispatch(ctx, session, dir, method, args) {
       return git.push(dir, { force: Boolean(args.force) });
     case 'switch':
       return git.switchBranch(dir, args.name, { stash: Boolean(args.stash) });
+    case 'merge':
+      return git.mergeBranch(dir, { from: args.from, into: args.into });
+    case 'cherryPick':
+      return git.cherryPick(dir, args.sha);
+    case 'branchLog':
+      return git.branchLog(dir, args.name, { limit: Number(args.limit) || 30 });
     case 'stashPush':
       return git.stashPush(dir, args.message);
     case 'stashApply':

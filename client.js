@@ -54,7 +54,7 @@ window.__ModuleLoader__.load({
       'action.collapse': '收起',
       'action.closeRoot': '关闭此文件夹',
       'menu.addFile': '添加到对话',
-      'menu.addFolder': '添加整个文件夹到对话',
+      'menu.addFolder': '添加文件夹到对话',
       'menu.addSelected': '添加 {n} 个所选项目到对话',
       'menu.copy': '复制',
       'menu.copyMany': '复制 {n} 项',
@@ -74,6 +74,11 @@ window.__ModuleLoader__.load({
       'status.preparing': '正在检查所选项目…',
       'status.adding': '正在添加 {done}/{total}…',
       'status.added': '已添加 {n} 个文件到对话',
+      'status.folderAdded': '已把 {n} 个文件夹加入输入框',
+      'status.separator': '，',
+      'error.folderPathUnsupported': '文件夹路径包含输入框无法引用的字符',
+      'error.folderRefFailed': '文件夹没能加入输入框（输入框忙碌或拒绝了该路径）',
+      'error.inputUnavailable': '输入框接口不可用：插件拿不到可用的输入方法',
       'status.skipped': '，跳过 {n} 个（过大或链接）',
       'status.copyHint': '已复制 {n} 项，右键目标文件夹可粘贴',
       'status.pasting': '正在粘贴…',
@@ -90,6 +95,7 @@ window.__ModuleLoader__.load({
       'error.pasteFailed': '粘贴失败：{message}',
       'error.listFailed': '无法读取目录：{message}',
       'error.previewFailed': '预览失败：该文件可能不在会话的工作目录内',
+      'error.revealFailed': '无法打开文件资源管理器：{message}',
       'error.tooManyFiles': '超过单次上限：已数到 {n} 个文件（上限 {max} 个）。请选择子文件夹或减少选择。',
       'error.tooBig': '超过单次上限：已数到 {size}（上限 {max}）。请选择子文件夹或减少选择。',
       'error.mkdirFailed': '新建文件夹失败：{message}',
@@ -122,7 +128,7 @@ window.__ModuleLoader__.load({
       'action.collapse': 'Collapse',
       'action.closeRoot': 'Close this folder',
       'menu.addFile': 'Add to conversation',
-      'menu.addFolder': 'Add the whole folder to the conversation',
+      'menu.addFolder': 'Add folder to conversation',
       'menu.addSelected': 'Add {n} selected items to the conversation',
       'menu.copy': 'Copy',
       'menu.copyMany': 'Copy {n} items',
@@ -142,6 +148,11 @@ window.__ModuleLoader__.load({
       'status.preparing': 'Checking the selected items…',
       'status.adding': 'Adding {done}/{total}…',
       'status.added': 'Added {n} files to the conversation',
+      'status.folderAdded': 'Added {n} folder(s) to the composer',
+      'status.separator': ', ',
+      'error.folderPathUnsupported': 'Folder path contains characters the composer cannot reference',
+      'error.folderRefFailed': 'The composer did not accept the folder reference (busy or unsupported path)',
+      'error.inputUnavailable': 'Composer interface unavailable: no usable input method was provided',
       'status.skipped': '; skipped {n} (too large or a link)',
       'status.copyHint': 'Copied {n} items; right-click a target folder to paste',
       'status.pasting': 'Pasting…',
@@ -158,6 +169,7 @@ window.__ModuleLoader__.load({
       'error.pasteFailed': 'Paste failed: {message}',
       'error.listFailed': 'Could not read the directory: {message}',
       'error.previewFailed': 'Preview failed; the file may be outside the session folder',
+      'error.revealFailed': 'Could not open the file manager: {message}',
       'error.tooManyFiles': 'Over the batch limit: {n} files found (limit {max}). Pick a subfolder or select fewer.',
       'error.tooBig': 'Over the batch limit: {size} found (limit {max}). Pick a subfolder or select fewer.',
       'error.mkdirFailed': 'Could not create the folder: {message}',
@@ -257,6 +269,31 @@ window.__ModuleLoader__.load({
       const parent = root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
       const child = path.replace(/\\/g, '/').toLowerCase();
       return child === parent || child.startsWith(`${parent}/`);
+    }
+
+    /**
+     * A folder travels as one composer reference (`@path/`), exactly like a
+     * folder dropped onto the composer — never as its recursively enumerated
+     * files. Only real files become attachments.
+     */
+    function folderMention(path, cwd) {
+      const relative = relativeTo(cwd, path);
+      const base = relative === '.' ? baseName(path) : relative;
+      const tail = `${base.replace(/[/\\]+$/, '')}/`;
+      if (/[\u0000-\u001f\u007f-\u009f"]/u.test(tail)) return undefined;
+      return /\s/u.test(tail) ? `@"${tail}"` : `@${tail}`;
+    }
+
+    function folderReference(path, cwd) {
+      const mention = folderMention(path, cwd);
+      if (!mention) return undefined;
+      return {
+        source: 'reference',
+        ref: mention,
+        label: `${baseName(path)}/`,
+        appearance: 'folder',
+        clipboardText: mention,
+      };
     }
 
     function encodeAddressPath(path) {
@@ -435,7 +472,8 @@ window.__ModuleLoader__.load({
       return rows;
     }
 
-    function FolderDock({ sessionId, inputActions, t }) {
+    function FolderDock({ sessionId, inputActions, useInput, t }) {
+      const draftText = typeof useInput === 'function' ? useInput((state) => state.draft) : undefined;
       const translate = t || T;
       const tr = React.useCallback(
         (key, params) => (typeof translate === 'function' ? translate(key, params) : `${key} ${JSON.stringify(params || {})}`),
@@ -464,10 +502,14 @@ window.__ModuleLoader__.load({
 
       const rootRef = React.useRef('');
       rootRef.current = root;
-      const sessionRootRef = React.useRef('');
-      sessionRootRef.current = sessionRoot;
       const levelsRef = React.useRef(levels);
       levelsRef.current = levels;
+      const draftRef = React.useRef('');
+      draftRef.current = typeof draftText === 'string' ? draftText : '';
+      const hasDraftRef = React.useRef(false);
+      hasDraftRef.current = typeof useInput === 'function';
+      const sessionRootRef = React.useRef('');
+      sessionRootRef.current = sessionRoot;
       const expandedRef = React.useRef(expanded);
       expandedRef.current = expanded;
       const selectedRef = React.useRef(selected);
@@ -699,55 +741,125 @@ window.__ModuleLoader__.load({
           setBusy({ done: 0, total: 0 });
           setNotice({ kind: 'info', text: tr('status.preparing') });
           try {
-            const scan = await rpc('scan', { paths: unique });
-            if (!scan.ok) throw new Error((scan.error && scan.error.message) || '');
-            const batch = scan.value;
-            const limits = batch.limits || {};
-            if (batch.over) {
-              if (batch.reason === 'too-big') {
-                setNotice({
-                  kind: 'error',
-                  text: tr('error.tooBig', { size: formatSize(batch.bytes), max: formatSize(limits.maxBatchBytes || 0) }),
-                });
-              } else {
-                setNotice({
-                  kind: 'error',
-                  text: tr('error.tooManyFiles', { n: batch.count, max: limits.maxFiles || 0 }),
-                });
+            const actions = actionRef.current;
+            if (!actions) throw new Error(tr('status.noInput'));
+
+            // A folder is one composer reference; only real files become attachments.
+            const directories = [];
+            const filePaths = [];
+            for (const path of unique) {
+              let type = null;
+              const levelValues = levelsRef.current || {};
+              for (const key of Object.keys(levelValues)) {
+                const level = levelValues[key];
+                if (!level || !Array.isArray(level.entries)) continue;
+                const found = level.entries.find((entry) => entry.path === path);
+                if (found) {
+                  type = found.type;
+                  break;
+                }
               }
-              return;
+              if (!type) {
+                const stat = await rpc('stat', { path });
+                if (stat.ok) type = stat.value.type;
+              }
+              if (type === 'directory') directories.push(path);
+              else filePaths.push(path);
             }
-            if (batch.count === 0) {
+
+            let folderCount = 0;
+            if (directories.length > 0) {
+              const references = [];
+              for (const dir of directories) {
+                const reference = folderReference(dir, sessionRootRef.current);
+                if (!reference) throw new Error(tr('error.folderPathUnsupported'));
+                references.push(reference);
+              }
+              // Preferred: the input shell's reference insertion (real folder chip).
+              const shell = actions.keyboard;
+              const nativeAccepted = shell && typeof shell.addFiles === 'function'
+                ? shell.addFiles(references, [])
+                : false;
+              if (!nativeAccepted) {
+                const mentions = references.map((reference) => reference.ref).join(' ');
+                if (hasDraftRef.current && typeof actions.setDraft === 'function') {
+                  const current = draftRef.current || '';
+                  const separator = current.length > 0 && !/\s$/.test(current) ? ' ' : '';
+                  actions.setDraft(`${current}${separator}${mentions} `);
+                } else if (typeof actions.caretSpan === 'function' && typeof actions.insertText === 'function') {
+                  for (const reference of references) {
+                    const span = actions.caretSpan();
+                    const inserted = actions.insertText(`${reference.ref} `, span);
+                    const accepted = inserted && typeof inserted.then === 'function' ? await inserted : inserted;
+                    if (accepted === false) throw new Error(tr('error.folderRefFailed'));
+                  }
+                } else {
+                  console.error('[folder-dock] inputActions has no supported insertion method', actions && Object.keys(actions));
+                  throw new Error(tr('error.inputUnavailable'));
+                }
+              }
+              folderCount = references.length;
+            }
+
+            let fileCount = 0;
+            let skippedCount = 0;
+            if (filePaths.length > 0) {
+              const scan = await rpc('scan', { paths: filePaths });
+              if (!scan.ok) throw new Error((scan.error && scan.error.message) || '');
+              const batch = scan.value;
+              const limits = batch.limits || {};
+              if (batch.over) {
+                if (batch.reason === 'too-big') {
+                  setNotice({
+                    kind: 'error',
+                    text: tr('error.tooBig', { size: formatSize(batch.bytes), max: formatSize(limits.maxBatchBytes || 0) }),
+                  });
+                } else {
+                  setNotice({
+                    kind: 'error',
+                    text: tr('error.tooManyFiles', { n: batch.count, max: limits.maxFiles || 0 }),
+                  });
+                }
+                return;
+              }
+              if (batch.count > 0) {
+                const conversation = pluginCtx ? pluginCtx.get('conversation') : undefined;
+                if (!conversation || typeof conversation.createDrafts !== 'function') {
+                  throw new Error(tr('status.noConversation'));
+                }
+                if (typeof actions.addAttachments !== 'function') {
+                  throw new Error(tr('status.noInput'));
+                }
+                setBusy({ done: 0, total: batch.count });
+                const files = [];
+                for (let index = 0; index < batch.files.length; index += 1) {
+                  setBusy({ done: index, total: batch.count });
+                  files.push(await fetchFile(batch.files[index].path));
+                }
+                setBusy({ done: batch.count, total: batch.count });
+                const drafts = conversation.createDrafts(sessionRef.current, files);
+                const accepted = actions.addAttachments(drafts.map((draft) => draft.id));
+                if (!accepted) {
+                  if (typeof conversation.releaseDraftAttachments === 'function') conversation.releaseDraftAttachments(drafts);
+                  throw new Error(tr('status.inputBusy'));
+                }
+                fileCount = drafts.length;
+                const skipped = batch.skipped || {};
+                skippedCount = (skipped.tooLarge || 0) + (skipped.symlink || 0);
+              }
+            }
+
+            const parts = [];
+            if (fileCount > 0) parts.push(tr('status.added', { n: fileCount }));
+            if (folderCount > 0) parts.push(tr('status.folderAdded', { n: folderCount }));
+            if (parts.length === 0) {
               setNotice({ kind: 'info', text: tr('status.nothing') });
               return;
             }
-            const conversation = pluginCtx ? pluginCtx.get('conversation') : undefined;
-            if (!conversation || typeof conversation.createDrafts !== 'function') {
-              throw new Error(tr('status.noConversation'));
-            }
-            const actions = actionRef.current;
-            if (!actions || typeof actions.addAttachments !== 'function') {
-              throw new Error(tr('status.noInput'));
-            }
-            setBusy({ done: 0, total: batch.count });
-            const files = [];
-            for (let index = 0; index < batch.files.length; index += 1) {
-              setBusy({ done: index, total: batch.count });
-              files.push(await fetchFile(batch.files[index].path));
-            }
-            setBusy({ done: batch.count, total: batch.count });
-            const drafts = conversation.createDrafts(sessionRef.current, files);
-            const accepted = actions.addAttachments(drafts.map((draft) => draft.id));
-            if (!accepted) {
-              if (typeof conversation.releaseDraftAttachments === 'function') conversation.releaseDraftAttachments(drafts);
-              throw new Error(tr('status.inputBusy'));
-            }
-            const skipped = batch.skipped || {};
-            const skippedCount = (skipped.tooLarge || 0) + (skipped.symlink || 0);
             setSelected(new Set());
             setNotice({
               kind: 'ok',
-              text: tr('status.added', { n: drafts.length }) + (skippedCount > 0 ? tr('status.skipped', { n: skippedCount }) : ''),
+              text: parts.join(tr('status.separator')) + (skippedCount > 0 ? tr('status.skipped', { n: skippedCount }) : ''),
             });
           } catch (error) {
             setNotice({ kind: 'error', text: tr('error.addFailed', { message: error && error.message ? error.message : String(error) }) });
@@ -803,6 +915,25 @@ window.__ModuleLoader__.load({
         if (!expandedRef.current.has(parent)) expand(parent);
         await load(parent);
       }, [creating, expand, load, tr]);
+
+      /**
+       * Ask the Host to open the OS file manager, and surface a failure: the
+       * Host rejects (missing Explorer, denied token) instead of reporting a
+       * silent success, and a rejected reveal must not vanish into the void.
+       */
+      const revealPath = React.useCallback(
+        async (path, revealInParent) => {
+          if (!path) return;
+          const result = await rpc('reveal', { path, revealInParent: Boolean(revealInParent) });
+          if (!result.ok) {
+            setNotice({
+              kind: 'error',
+              text: tr('error.revealFailed', { message: (result.error && result.error.message) || '' }),
+            });
+          }
+        },
+        [tr],
+      );
 
       /* ------------------------------------------------------------ interaction */
 
@@ -946,7 +1077,7 @@ window.__ModuleLoader__.load({
             }
             break;
           case 'reveal':
-            if (paths[0]) void rpc('reveal', { path: paths[0], revealInParent: true });
+            if (paths[0]) void revealPath(paths[0], true);
             break;
           case 'newFolder':
             if (pathOfKind(entry, 'directory')) setCreating({ dir: entry.path, name: '' });
@@ -1003,7 +1134,7 @@ window.__ModuleLoader__.load({
             'aria-label': tr('action.openInExplorer'),
             disabled: !root,
             onClick: () => {
-              if (root) void rpc('reveal', { path: root, revealInParent: false });
+              if (root) void revealPath(root, false);
             },
           },
           h(OpenInIcon, {}),
@@ -1721,6 +1852,8 @@ window.__ModuleLoader__.load({
       const [confirm, setConfirm] = useState(null);
       const [menuOpen, setMenuOpen] = useState(false);
       const [commitSel, setCommitSel] = useState(null);
+      const [branchMenu, setBranchMenu] = useState(null);
+      const [cherry, setCherry] = useState(null);
       const [frameHeight, setFrameHeight] = useState(0);
       const mounted = useRef(true);
       const rootRef = useRef(null);
@@ -1754,6 +1887,19 @@ window.__ModuleLoader__.load({
         mounted.current = true;
         return () => { mounted.current = false; };
       }, []);
+
+      useEffect(() => {
+        if (!branchMenu) return undefined;
+        const close = () => setBranchMenu(null);
+        window.addEventListener('click', close);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+          window.removeEventListener('click', close);
+          window.removeEventListener('scroll', close, true);
+          window.removeEventListener('resize', close);
+        };
+      }, [branchMenu]);
 
       const notify = useCallback((text, tone = 'info') => {
         setToast({ text, tone, id: Date.now() });
@@ -1976,6 +2122,124 @@ window.__ModuleLoader__.load({
         });
       };
 
+      const showConflict = (result, label) => {
+        const files = result.conflicts || [];
+        ask({
+          title: `检测到冲突：${label}`,
+          body: h('div', { className: 'gw-prose' },
+            h('p', null, `Git 已停止并保留冲突现场（${files.length || '若干'} 个文件）。插件不会自动解决冲突，也不会丢弃任何改动。`),
+            files.length
+              ? h('ul', { className: 'gw-conflict-list' }, files.map((file) => h('li', { key: file }, file)))
+              : null,
+            h('p', { className: 'gw-muted' }, '请在编辑器/终端里解决冲突并 git add，然后提交；要放弃这次操作，合并用 git merge --abort，cherry-pick 用 git cherry-pick --abort。'),
+            h('pre', { className: 'gw-error-pre' }, String(result.output || '').slice(0, 1200))),
+          confirmLabel: '知道了',
+          danger: false,
+          onConfirm: () => setConfirm(null),
+        });
+      };
+
+      const showBlocked = (result, label) => {
+        const files = result.files || [];
+        const switching = result.reason === 'switch';
+        ask({
+          title: switching ? `无法切换分支：${label}` : `本地改动阻止了此操作：${label}`,
+          body: h('div', { className: 'gw-prose' },
+            h('p', null, switching
+              ? '当前工作区的改动与目标分支冲突，Git 拒绝切换。请先提交或 stash，再重试。'
+              : '这些本地改动会被覆盖，Git 已拒绝执行。请先提交或 stash 它们，再重试。'),
+            files.length ? h('ul', { className: 'gw-conflict-list' }, files.map((file) => h('li', { key: file }, file))) : null,
+            h('p', { className: 'gw-muted' }, '插件不会自动 stash 或丢弃你的改动。'),
+            h('pre', { className: 'gw-error-pre' }, String(result.output || '').slice(0, 800))),
+          confirmLabel: '知道了',
+          danger: false,
+          onConfirm: () => setConfirm(null),
+        });
+      };
+
+      const runMerge = async (from, into) => {
+        const value = await act('merge', 'merge', { from, into, dir: snap.cwd }, null);
+        if (!value) return;
+        if (value.ok) {
+          notify(`已合并 ${from} 到 ${into}`, 'success');
+          return;
+        }
+        if (value.blocked) {
+          showBlocked(value, `${from} → ${into}`);
+          return;
+        }
+        if (value.conflict) {
+          showConflict(value, `${from} → ${into}`);
+          return;
+        }
+        notify(value.output || '合并失败', 'error');
+      };
+
+      const askMergeIntoCurrent = (branch) => {
+        const current = snap.branch.name || '当前分支';
+        ask({
+          title: `合并 ${branch.name} 到 ${current}`,
+          body: h('div', { className: 'gw-prose' },
+            h('p', null, `会把 ${branch.name} 的提交合并进 ${current}（--no-ff）。`),
+            h('p', { className: 'gw-muted' }, '本地未提交的改动会保留；只有 Git 判断会被覆盖时才会拒绝，并列出需要先提交或 stash 的文件。')),
+          confirmLabel: '合并',
+          onConfirm: async () => {
+            setConfirm(null);
+            await runMerge(branch.name, current);
+          },
+        });
+      };
+
+      const askMergeIntoBranch = (branch) => {
+        const current = snap.branch.name || '当前分支';
+        ask({
+          title: `把 ${current} 合并到 ${branch.name}`,
+          body: h('div', { className: 'gw-prose' },
+            h('p', null, `会切换到 ${branch.name}，把 ${current} 合并进去，成功后切回 ${current}。`),
+            h('p', { className: 'gw-muted' }, '工作区改动与目标分支冲突时 Git 会拒绝切换；插件不会自动 stash。冲突会停留在目标分支现场。')),
+          confirmLabel: '合并',
+          onConfirm: async () => {
+            setConfirm(null);
+            await runMerge(current, branch.name);
+          },
+        });
+      };
+
+      const openCherry = async (branch) => {
+        setBranchMenu(null);
+        setCherry({ branch: branch.name, loading: true, commits: [] });
+        try {
+          const commits = await rpc('branchLog', { name: branch.name, dir: snap?.cwd, limit: 40 });
+          if (mounted.current) setCherry({ branch: branch.name, loading: false, commits });
+        } catch (err) {
+          if (mounted.current) setCherry(null);
+          notify(err.message, 'error');
+        }
+      };
+
+      const pickCherry = (commit) => {
+        const branch = cherry ? cherry.branch : '';
+        setCherry(null);
+        ask({
+          title: `Cherry-pick ${commit.short}`,
+          body: h('div', { className: 'gw-prose' },
+            h('p', null, `把 ${branch} 上的这条提交摘到当前分支（${snap.branch.name || 'HEAD'}）：`),
+            h('p', null, commit.subject || ''),
+            h('p', { className: 'gw-muted' }, '冲突时保留冲突现场，由你手动解决。')),
+          confirmLabel: 'Cherry-pick',
+          onConfirm: async () => {
+            setConfirm(null);
+            const value = await act('cherryPick', 'cherryPick', { sha: commit.short, dir: snap.cwd }, null);
+            if (!value) return;
+            if (value.ok) notify(`已 cherry-pick ${commit.short}`, 'success');
+            else if (value.empty) notify('该提交已经在当前分支中，无需 cherry-pick', 'info');
+            else if (value.blocked) showBlocked(value, `cherry-pick ${commit.short}`);
+            else if (value.conflict) showConflict(value, `cherry-pick ${commit.short}`);
+            else notify(value.output || 'cherry-pick 失败', 'error');
+          },
+        });
+      };
+
       const aiGenerate = async () => {
         setAiBusy(true);
         setAi(null);
@@ -2013,6 +2277,65 @@ window.__ModuleLoader__.load({
           await action();
         },
       }) : null;
+
+      const branchMenuNode = branchMenu ? h('div', {
+        className: 'gw-branch-menu',
+        style: {
+          left: `${Math.max(8, Math.min(branchMenu.x, (window.innerWidth || 1200) - 260))}px`,
+          top: `${Math.max(8, Math.min(branchMenu.y, (window.innerHeight || 800) - 230))}px`,
+        },
+        onClick: (event) => event.stopPropagation(),
+        onContextMenu: (event) => event.preventDefault(),
+      },
+        h('div', { className: 'gw-branch-menu-title' }, branchMenu.branch.name),
+        h('button', {
+          type: 'button',
+          className: 'gw-menu-item',
+          disabled: Boolean(branchMenu.branch.current) || Boolean(busy),
+          onClick: () => { setBranchMenu(null); askSwitch(branchMenu.branch); },
+        }, '切换到该分支'),
+        h('button', {
+          type: 'button',
+          className: 'gw-menu-item',
+          disabled: Boolean(branchMenu.branch.current) || Boolean(busy),
+          onClick: () => { setBranchMenu(null); askMergeIntoCurrent(branchMenu.branch); },
+        }, '合并该分支到当前分支'),
+        h('button', {
+          type: 'button',
+          className: 'gw-menu-item',
+          disabled: Boolean(branchMenu.branch.current) || Boolean(busy),
+          onClick: () => { setBranchMenu(null); askMergeIntoBranch(branchMenu.branch); },
+        }, '把当前分支合并到该分支'),
+        h('button', {
+          type: 'button',
+          className: 'gw-menu-item',
+          disabled: Boolean(busy),
+          onClick: () => { void openCherry(branchMenu.branch); },
+        }, 'Cherry-pick 提交…')) : null;
+
+      const cherryNode = cherry ? h('div', {
+        className: 'gw-modal-backdrop',
+        onMouseDown: (event) => { if (event.target === event.currentTarget) setCherry(null); },
+      },
+        h('div', { className: 'gw-modal gw-picker', role: 'dialog', 'aria-modal': 'true' },
+          h('div', { className: 'gw-modal-title' }, `Cherry-pick · ${cherry.branch}`),
+          h('div', { className: 'gw-modal-body' },
+            cherry.loading
+              ? '读取提交…'
+              : cherry.commits.length === 0
+                ? '这个分支没有可选的提交'
+                : h('div', { className: 'gw-picker-list' },
+                  cherry.commits.map((commit) => h('button', {
+                    key: commit.short,
+                    type: 'button',
+                    className: 'gw-picker-row',
+                    onClick: () => pickCherry(commit),
+                  },
+                    h('code', { className: 'gw-sha is-static' }, commit.short),
+                    h('span', { className: 'gw-picker-subject' }, commit.subject),
+                    h('span', { className: 'gw-muted gw-small' }, `${commit.author} · ${relativeTime(commit.time * 1000)}`))))),
+          h('div', { className: 'gw-modal-actions' },
+            h(Btn, { onClick: () => setCherry(null) }, '取消')))) : null;
 
       if (compact) {
         const ctab = (id, label, count) => h('button', {
@@ -2067,6 +2390,7 @@ window.__ModuleLoader__.load({
                       h(SideSections, {
                         snap, busy,
                         onSwitch: askSwitch,
+                        onBranchMenu: (branch, event) => setBranchMenu({ x: event.clientX, y: event.clientY, branch }),
                         onStashPush: () => act('stashPush', 'stashPush', { dir: snap.cwd }, '已暂存改动'),
                         onStashApply: (item, pop) => act('stashApply', 'stashApply', { index: item.index, pop, dir: snap.cwd }, pop ? '已弹出暂存' : '已应用暂存'),
                         onStashDrop: (item) => ask({
@@ -2087,6 +2411,8 @@ window.__ModuleLoader__.load({
                 })),
             h(StatusBar, { snap })) : null,
           toast ? h('div', { className: cx('gw-toast', `gw-tone-${toast.tone}`) }, toast.text) : null,
+          branchMenuNode,
+          cherryNode,
           confirmNode);
       }
 
@@ -2130,6 +2456,7 @@ window.__ModuleLoader__.load({
               h(SideSections, {
                 snap, busy,
                 onSwitch: askSwitch,
+                onBranchMenu: (branch, event) => setBranchMenu({ x: event.clientX, y: event.clientY, branch }),
                 onStashPush: () => act('stashPush', 'stashPush', { dir: snap.cwd }, '已暂存改动'),
                 onStashApply: (item, pop) => act('stashApply', 'stashApply', { index: item.index, pop, dir: snap.cwd }, pop ? '已弹出暂存' : '已应用暂存'),
                 onStashDrop: (item) => ask({
@@ -2159,6 +2486,8 @@ window.__ModuleLoader__.load({
           h(StatusBar, { snap })) : null,
 
         toast ? h('div', { className: cx('gw-toast', `gw-tone-${toast.tone}`) }, toast.text) : null,
+        branchMenuNode,
+        cherryNode,
         confirmNode);
     }
 
@@ -2588,7 +2917,7 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------- branches/stash */
 
     function SideSections(props) {
-      const { snap, busy, onSwitch, onStashPush, onStashApply, onStashDrop } = props;
+      const { snap, busy, onSwitch, onBranchMenu, onStashPush, onStashApply, onStashDrop } = props;
       const [open, setOpen] = useState('branches');
       const branches = snap.branches ?? [];
       const stash = snap.stash ?? [];
@@ -2599,17 +2928,24 @@ window.__ModuleLoader__.load({
           open === 'branches'
             ? h(React.Fragment, null,
               h('span', { className: 'gw-spacer' }),
-              h('span', { className: 'gw-muted gw-small' }, '点击分支可切换'))
+              h('span', { className: 'gw-muted gw-small' }, '左键切换 · 右键更多'))
             : null),
         open === 'branches'
           ? h('div', { className: 'gw-side-list' },
-            branches.map((branch) => h('button', {
+            branches.map((branch) => h('div', {
               key: branch.name,
-              type: 'button',
+              role: 'button',
+              tabIndex: 0,
               className: cx('gw-side-row', branch.current && 'is-current'),
-              onClick: () => { if (!branch.current) onSwitch(branch); },
-              disabled: branch.current || Boolean(busy),
-              title: branch.current ? '当前分支' : `切换到 ${branch.name}`,
+              onClick: () => { if (!branch.current && !busy) onSwitch(branch); },
+              onContextMenu: (event) => {
+                event.preventDefault();
+                onBranchMenu(branch, event);
+              },
+              onKeyDown: (event) => {
+                if (event.key === 'Enter' && !branch.current && !busy) onSwitch(branch);
+              },
+              title: branch.current ? '当前分支 · 右键查看更多操作' : '点击切换 · 右键查看更多操作',
             },
               h('span', { className: cx('gw-dot', branch.current && 'is-on') }),
               h('span', { className: 'gw-side-name' }, branch.name),
@@ -3106,6 +3442,17 @@ window.__ModuleLoader__.load({
 .gw-compact .gw-detail-files{max-height:26%}
 .gw-tab-count{min-width:16px;height:16px;padding:0 5px;margin-left:2px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary)}
 .gw-tab-icon{display:inline-flex;align-items:center;flex:none;margin-right:5px;color:var(--dsw-alias-brand-primary)}
+/* branch context menu + commit picker */
+.gw-side-row{cursor:pointer;user-select:none}
+.gw-side-row:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.gw-branch-menu{position:fixed;z-index:96;min-width:232px;padding:6px;border-radius:10px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 16px 40px rgba(0,0,0,.35)}
+.gw-branch-menu-title{padding:6px 9px 7px;margin-bottom:4px;border-bottom:1px solid var(--dsw-alias-border-l1);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gw-picker{width:min(640px,100%)}
+.gw-picker-list{max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.gw-picker-row{display:flex;align-items:center;gap:10px;width:100%;padding:6px 8px;border:0;background:none;border-radius:6px;cursor:pointer;text-align:left;font:inherit;color:var(--dsw-alias-label-primary)}
+.gw-picker-row:hover{background:var(--dsw-alias-bg-layer-1)}
+.gw-picker-subject{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.gw-conflict-list{margin:6px 0;padding-left:18px;max-height:150px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 `;
 
     function injectStyles() {

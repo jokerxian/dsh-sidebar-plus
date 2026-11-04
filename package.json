@@ -1,6 +1,6 @@
 {
   "name": "@jokerxian/dsh-sidebar-plus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
   "description": "Sidebar Plus: folder browsing with add-to-conversation, and a full Git workbench, both in the right sidebar.",
